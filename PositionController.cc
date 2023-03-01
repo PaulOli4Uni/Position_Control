@@ -72,9 +72,16 @@ class gz::sim::systems::PositionControllerPrivate
 
   public: void UpdateTargets(const std::string message);
 
+  /// \brief Calculates the time goals and properties after the Model Pose Targets has been updates
+  public: void UpdateTime(const gz::sim::UpdateInfo &_info);
+
   /// \brief Calculates the required force to move model to desired pose and updates the force and torque values
   /// \param[in] _msg String message (Containing Pose message)
-  public: void UpdateForce(const gz::sim::UpdateInfo &_info);
+  public: void UpdateForce(const gz::sim::UpdateInfo &_info, const EntityComponentManager &_ecm, double movement_time);
+
+  /// \brief Returns the opposite vector of the one provided (changes direction)
+  /// \param[in] vector Vector which direction should be changed
+  public: math::Vector3d FlipVector3D(math::Vector3d vector);
 
 
   // -------------------------       Variables      ------------------------
@@ -92,20 +99,23 @@ class gz::sim::systems::PositionControllerPrivate
   public: gz::math::Pose3d pose_offset = {0, 0, 0, 0, 0, 0};
 
   /// \brief Specifies the xyz and rpy pose targets
-  public: gz::math::Pose3d pose_target = {0, 0, 0, 0, 0, 0};   // <------------------ Might not need!
+  public: gz::math::Pose3d pose_target = {0, 0, 0, 0, 0, 0};
 
   /// \brief Specifies the time in which to reach the pose target
-  public: float time_target = 0;   // <------------------ Might not need!
+  public: double time_target;
 
   /// \brief Specifies the time at which the pose target should be reached
   public: std::chrono::duration<double> time_destination;
 
   /// \brief Specifies the size of the timestep
-  public: std::chrono::duration<double> time_step_size;
+  public: double time_step_size;
 
   /// \brief Specifies the number of timesteps before destination is reached to update the force and torque values
   // Larger value -> less precise. Smaller value -> less smooth
   public: int timestep_precision;
+
+  /// \brief Specifies the time when the precision timestep has been reached
+  public: std::chrono::duration<double> time_precision_destination;
 
   /// \brief Shows if topic sent (through pose topic), true until destination reached
   public: bool on_topic_pose;
@@ -211,9 +221,7 @@ void PositionController::Configure(const Entity &_entity,
     this->dataPtr->canonicalLink = Link(links[0]);
   }
 
-  // Get Time step size (Note that duration has to be parsed to a double)
-  std::chrono::duration<double> e = _info.dt;
-  this->dataPtr->time_step_size = e.count();
+
 }
 
 //////////////////////////////////////////////////
@@ -234,18 +242,35 @@ void PositionController::PreUpdate(const gz::sim::UpdateInfo &_info,
   if (_info.paused)
     return;
 
+
+  // New force info has been given
   if (this->dataPtr->apply_wrench)
   {
     this->dataPtr->apply_wrench = false;
-    this->dataPtr->UpdateForce(_info);
+    this->dataPtr->UpdateTime(_info);
+    this->dataPtr->UpdateForce(_info, _ecm, this->dataPtr->time_target);
+    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->wrench_force, {0,0,0});
   }
-  
+
   std::chrono::duration<double> ElapsedTime = _info.simTime;
 
+  // Time Precision timestep has been reached
+
+  if (this->dataPtr->time_precision_destination.count() == ElapsedTime.count())
+  {
+    gzmsg << "At the Precision Time Step:  " << ElapsedTime.count() << std::endl;
+    this->dataPtr->UpdateForce(_info, _ecm, this->dataPtr->time_step_size*this->dataPtr->timestep_precision);
+    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->FlipVector3D(this->dataPtr->wrench_force), this->dataPtr->FlipVector3D(this->dataPtr->wrench_torque));
+  }
+
+  // Time for which force should be applied has been reached
   if (this->dataPtr->time_destination.count() == ElapsedTime.count())
   {
-    gzmsg << "this is it it this is";
-    gzmsg << this->dataPtr->time_destination.count() << "    " << ElapsedTime.count() << std::endl;
+    gzmsg << "At the final time step:  " << ElapsedTime.count() << std::endl;
+    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->FlipVector3D(this->dataPtr->wrench_force), this->dataPtr->FlipVector3D(this->dataPtr->wrench_torque));
+
+    this->dataPtr->wrench_force.Set(0,0,0); this->dataPtr->wrench_torque.Set(0,0,0); // Reset Force Amounts
+
   }
   
 
@@ -256,31 +281,30 @@ void PositionController::PreUpdate(const gz::sim::UpdateInfo &_info,
   this->dataPtr->canonicalLink.AddWorldWrench(_ecm, force, torque);
 */
   
-  
+  // ----Move block as time progresses
   //std::chrono::duration<double> ElapsedTime = _info.simTime;
-  if (ElapsedTime.count() == 1.0){
-    math::Vector3d force;
-    force.Set(1000.0,500,0);
-    math::Vector3d torque;
-    torque.Set(0,0,1000);
-    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, force, torque);
-        gzmsg << "Wololololololololololololololololololo";
-  }
-  if (ElapsedTime.count() == 5.0){
-    math::Vector3d force;
-    force.Set(-1000.0,-500,0);
-    math::Vector3d torque;
-    torque.Set(0,0,-1000);
-    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, force, torque);
-  }
+  // if (ElapsedTime.count() == 1.0){
+  //   math::Vector3d force;
+  //   force.Set(1000.0,500,0);
+  //   math::Vector3d torque;
+  //   torque.Set(0,0,1000);
+  //   this->dataPtr->canonicalLink.AddWorldWrench(_ecm, force, torque);
+  // }
+  // if (ElapsedTime.count() == 5.0){
+  //   math::Vector3d force;
+  //   force.Set(-1000.0,-500,0);
+  //   math::Vector3d torque;
+  //   torque.Set(0,0,-1000);
+  //   this->dataPtr->canonicalLink.AddWorldWrench(_ecm, force, torque);
+  // }
   
-  if (ElapsedTime.count() == 7.0){
-    math::Vector3d force;
-    force.Set(0,1000,100);
-    math::Vector3d torque;
-    //torque.Set(0,0,-1000);
-    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, force, torque);
-  }
+  // if (ElapsedTime.count() == 7.0){
+  //   math::Vector3d force;
+  //   force.Set(0,1000,100);
+  //   math::Vector3d torque;
+  //   //torque.Set(0,0,-1000);
+  //   this->dataPtr->canonicalLink.AddWorldWrench(_ecm, force, torque);
+  // }
 
   ////// ------------------------------------ Pose implementation
   
@@ -294,17 +318,17 @@ void PositionController::PreUpdate(const gz::sim::UpdateInfo &_info,
 
   
   // Create the pose component if it does not exist.
-  auto pos = _ecm.Component<components::Pose>(
-      this->dataPtr->model.Entity());
-  if (!pos)
-  {
-    _ecm.CreateComponent(this->dataPtr->model.Entity(),
-        components::Pose());
-  }
+  // auto pos = _ecm.Component<components::Pose>(
+  //     this->dataPtr->model.Entity());
+  // if (!pos)
+  // {
+  //   _ecm.CreateComponent(this->dataPtr->model.Entity(),
+  //      components::Pose());
+  //}
 
   // Get and set robotBaseFrame to odom transformation.
-  const math::Pose3d rawPose = worldPose(this->dataPtr->model.Entity(), _ecm);
-  math::Pose3d pose = rawPose * this->dataPtr->pose_offset;
+  //const math::Pose3d rawPose = worldPose(this->dataPtr->model.Entity(), _ecm);
+  //math::Pose3d pose = rawPose * this->dataPtr->pose_offset;
   //gzmsg << pose.Pos().X();
   //gzmsg << rawPose.Pos().X(); gzmsg << rawPose.Pos().Y(); gzmsg << rawPose.Pos().Z();
   //gzmsg << rawPose.Pos().Rot(); gzmsg << rawPose.Pos().Yaw(); 
@@ -375,18 +399,80 @@ void PositionControllerPrivate::UpdateTargets(const std::string message)
 
   this->pose_target.Set(msg_vector[0], msg_vector[1], msg_vector[2], msg_vector[3], msg_vector[4], msg_vector[5]);
   this->time_target = msg_vector[6];
+
+}
+
+void PositionControllerPrivate::UpdateTime(const gz::sim::UpdateInfo &_info)
+{
+  // Calculate time when destination has to be reached
+  using fsec = std::chrono::duration<float>;
+  auto time_target_chrono = std::chrono::round<std::chrono::nanoseconds>(fsec{this->time_target});
+  
+  this->time_destination = _info.simTime + time_target_chrono;
+
+
+  // Get Time step size (Note that duration has to be parsed to a double)
+  std::chrono::duration<double> e = _info.dt;
+  this->time_step_size = e.count();
+  // gzmsg << this->time_step_size << std::endl;
+
+  auto time_precision_chrono = std::chrono::round<std::chrono::nanoseconds>(fsec{ this->timestep_precision*this->time_step_size });
+  this->time_precision_destination = this->time_destination - time_precision_chrono;
   
 }
 
-void PositionControllerPrivate::UpdateForce(const gz::sim::UpdateInfo &_info)
+void PositionControllerPrivate::UpdateForce(const gz::sim::UpdateInfo &_info, const EntityComponentManager &_ecm, double movement_time)
 {
-    
-    using fsec = std::chrono::duration<float>;
-    auto num = std::chrono::round<std::chrono::nanoseconds>(fsec{this->time_target});
-    this->time_destination = _info.simTime + num;
-  //gzmsg << this->time_destination;
-   //std::chrono::duration<double> ElapsedTime = this->dataptr->_info.simTime;
+  // - Find Current Pose of Model
+  
+  // Create the pose component if it does not exist.
+  auto pos = _ecm.Component<components::Pose>(this->model.Entity());
+  // if (!pos)
+  // {
+  //   _ecm.CreateComponent(this->model.Entity(), components::Pose());
+  // }
 
+  // Get and set robotBaseFrame to odom transformation.
+
+  const math::Pose3d rawPose = worldPose(this->model.Entity(), _ecm);
+  math::Pose3d pose = rawPose * this->pose_offset;
+
+  gzmsg << "New force being calulated. Current Pose for x is: " << pose.Pos().X() << std::endl;
+  double distance = this->pose_target.X() - pose.Pos().X();
+  double velocity = distance/movement_time;
+
+  double mass = 1.0;
+
+  double force = mass * velocity / this->time_step_size;
+  force = force - this->wrench_force.X();
+  this->wrench_force.Set(force, 0, 0);
+
+  gzmsg << "Force to Apply -> " << force << std::endl;
+
+  //gzmsg << rawPose.Pos().X(); gzmsg << rawPose.Pos().Y(); gzmsg << rawPose.Pos().Z();
+  //gzmsg << rawPose.Pos().Rot(); gzmsg << rawPose.Pos().Yaw(); 
+  //gzmsg << pose.Rot().Yaw();
+  //msg.mutable_pose()->mutable_position()->set_y(pose.Pos().Y());
+  // msgs::Set(msg.mutable_pose()->mutable_orientation(), pose.Rot());
+  // if (this->dimensions == 3)
+  // {
+  //   msg.mutable_pose()->mutable_position()->set_z(pose.Pos().Z());
+  
+
+
+  //Calculate force needed to move box to desired location
+
+  //this->UpdateForce.Set(1, 1, 1);
+  //this->wrench_force = {0, 0, 0};
+  //this->dataPtr->wrench_force = {0, 0, 0};
+
+
+}
+
+math::Vector3d PositionControllerPrivate::FlipVector3D(math::Vector3d vector)
+{
+  math::Vector3d reversed = {-1*vector.X(), -1*vector.Y(), -1*vector.Z()};
+  return reversed;
 }
 //////////////////////////////////////////////////
 

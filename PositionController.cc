@@ -16,6 +16,9 @@
  * gz topic -t /box -m gz.msgs.StringMsg -p 'data:"Text"'
 
 
+ * Note:
+ Pose information will be sent in meters and degrees. After that the program convernt to radians and will ONLY work in radians
+
  */
 
 #include <map>
@@ -55,6 +58,8 @@
 
 #include "PositionController.hh"
 
+# define M_PIl          3.141592653589793238462643383279502884L /* pi */
+
 using namespace gz;
 using namespace sim;
 using namespace systems;
@@ -70,6 +75,7 @@ class gz::sim::systems::PositionControllerPrivate
   /// \param[in] _msg String message (Containing File name)
   public: void OnFilePub(const msgs::StringMsg &_msg);
 
+  /// \brief Updates the pose and time target
   public: void UpdateTargets(const std::string message);
 
   /// \brief Calculates the time goals and properties after the Model Pose Targets has been updates
@@ -77,7 +83,23 @@ class gz::sim::systems::PositionControllerPrivate
 
   /// \brief Calculates the required force to move model to desired pose and updates the force and torque values
   /// \param[in] _msg String message (Containing Pose message)
-  public: void UpdateForce(const gz::sim::UpdateInfo &_info, const EntityComponentManager &_ecm, double movement_time);
+  public: void UpdateWrench(const gz::sim::UpdateInfo &_info, const EntityComponentManager &_ecm, double movement_time);
+
+  /// \brief Returns the force required to move an object from its current to a new position within a set amount of time
+  /// \param[in] current_position Single coordinate of current position (in meters)
+  /// \param[in] next_position Single coordinate of position object has to move to (in meters)
+  /// \param[in] mass Mass of the object (in kg)
+  /// \param[in] movement_time Time in which object has to reach the 'next_position' (in seconds)
+  /// \param[in] timestep_size Time over which force will be applied to the object (= timestep size of the simulator) (in seconds)
+  private: double CalcForce(double current_position, double next_position, double mass, double movement_time, double timestep_size);
+
+  /// \brief Returns the torque (wrench) required to rotate an object from its current to a new orientation within a set amount of time
+  /// \param[in] current_orientation Single-axis angle of current orientation (in degrees)
+  /// \param[in] next_orientation Single-axis orientation object has to rotate to (in degrees)
+  /// \param[in] mass_moment_of_inertia Mass moment of inertia of the object (in XX)
+  /// \param[in] movement_time Time in which object has to reach the 'next_orientation' (in seconds)
+  /// \param[in] timestep_size Time over which force will be applied to the object (= timestep size of the simulator) (in seconds)
+  private: double CalcTorque(double current_orientation, double next_orientation, double mass_moment_of_inertia, double movement_time, double timestep_size);
 
   /// \brief Returns the opposite vector of the one provided (changes direction)
   /// \param[in] vector Vector which direction should be changed
@@ -248,8 +270,8 @@ void PositionController::PreUpdate(const gz::sim::UpdateInfo &_info,
   {
     this->dataPtr->apply_wrench = false;
     this->dataPtr->UpdateTime(_info);
-    this->dataPtr->UpdateForce(_info, _ecm, this->dataPtr->time_target);
-    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->wrench_force, {0,0,0});
+    this->dataPtr->UpdateWrench(_info, _ecm, this->dataPtr->time_target);
+    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->wrench_force, this->dataPtr->wrench_torque);
   }
 
   std::chrono::duration<double> ElapsedTime = _info.simTime;
@@ -259,8 +281,12 @@ void PositionController::PreUpdate(const gz::sim::UpdateInfo &_info,
   if (this->dataPtr->time_precision_destination.count() == ElapsedTime.count())
   {
     gzmsg << "At the Precision Time Step:  " << ElapsedTime.count() << std::endl;
-    this->dataPtr->UpdateForce(_info, _ecm, this->dataPtr->time_step_size*this->dataPtr->timestep_precision);
+
     this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->FlipVector3D(this->dataPtr->wrench_force), this->dataPtr->FlipVector3D(this->dataPtr->wrench_torque));
+    this->dataPtr->wrench_force.Set(0,0,0); this->dataPtr->wrench_torque.Set(0,0,0); // Reset Force Amounts
+
+    this->dataPtr->UpdateWrench(_info, _ecm, this->dataPtr->time_step_size*this->dataPtr->timestep_precision);
+    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->wrench_force, this->dataPtr->wrench_torque);
   }
 
   // Time for which force should be applied has been reached
@@ -397,7 +423,8 @@ void PositionControllerPrivate::UpdateTargets(const std::string message)
     return;
    }
 
-  this->pose_target.Set(msg_vector[0], msg_vector[1], msg_vector[2], msg_vector[3], msg_vector[4], msg_vector[5]);
+  // Degrees converted to radians
+  this->pose_target.Set(msg_vector[0], msg_vector[1], msg_vector[2], msg_vector[3]*(M_PIl/180), msg_vector[4]*(M_PIl/180), msg_vector[5]*(M_PIl/180));
   this->time_target = msg_vector[6];
 
 }
@@ -421,7 +448,7 @@ void PositionControllerPrivate::UpdateTime(const gz::sim::UpdateInfo &_info)
   
 }
 
-void PositionControllerPrivate::UpdateForce(const gz::sim::UpdateInfo &_info, const EntityComponentManager &_ecm, double movement_time)
+void PositionControllerPrivate::UpdateWrench(const gz::sim::UpdateInfo &_info, const EntityComponentManager &_ecm, double movement_time)
 {
   // - Find Current Pose of Model
   
@@ -438,16 +465,26 @@ void PositionControllerPrivate::UpdateForce(const gz::sim::UpdateInfo &_info, co
   math::Pose3d pose = rawPose * this->pose_offset;
 
   gzmsg << "New force being calulated. Current Pose for x is: " << pose.Pos().X() << std::endl;
-  double distance = this->pose_target.X() - pose.Pos().X();
-  double velocity = distance/movement_time;
+  gzmsg << "Movement time is: " << movement_time << std::endl;
 
   double mass = 1.0;
 
-  double force = mass * velocity / this->time_step_size;
-  force = force - this->wrench_force.X();
-  this->wrench_force.Set(force, 0, 0);
+  //gzmsg << "force calc result: " << force << std::endl;
+  //force = force - this->wrench_force.X();
+  double force_x = CalcForce(pose.Pos().X(), this->pose_target.X(), mass, movement_time, this->time_step_size);
+  double force_y = CalcForce(pose.Pos().Y(), this->pose_target.Y(), mass, movement_time, this->time_step_size);
+  double force_z = CalcForce(pose.Pos().Z(), this->pose_target.Z(), mass, movement_time, this->time_step_size);
+  this->wrench_force.Set(force_x, force_y, force_z);
 
-  gzmsg << "Force to Apply -> " << force << std::endl;
+  gzmsg << "Current Roll is: " << pose.Rot().Roll() << std::endl;
+  gzmsg << "Roll goal is: " << this->pose_target.Rot().Roll() << std::endl;
+  
+
+  double torque_x = CalcTorque(pose.Rot().Roll(), this->pose_target.Rot().Roll(), 1, movement_time, this->time_step_size);
+  double torque_y = CalcTorque(pose.Rot().Pitch(), this->pose_target.Rot().Pitch(), 1, movement_time, this->time_step_size);
+  double torque_z = CalcTorque(pose.Rot().Yaw(), this->pose_target.Rot().Yaw(), 1, movement_time, this->time_step_size);
+  this->wrench_torque.Set(torque_x, torque_y, torque_z);
+//  gzmsg << "Force to Apply (accounts for current force) -> " << force << std::endl;
 
   //gzmsg << rawPose.Pos().X(); gzmsg << rawPose.Pos().Y(); gzmsg << rawPose.Pos().Z();
   //gzmsg << rawPose.Pos().Rot(); gzmsg << rawPose.Pos().Yaw(); 
@@ -462,11 +499,29 @@ void PositionControllerPrivate::UpdateForce(const gz::sim::UpdateInfo &_info, co
 
   //Calculate force needed to move box to desired location
 
-  //this->UpdateForce.Set(1, 1, 1);
+  //this->UpdateWrench.Set(1, 1, 1);
   //this->wrench_force = {0, 0, 0};
   //this->dataPtr->wrench_force = {0, 0, 0};
 
 
+}
+
+double PositionControllerPrivate::CalcForce(double current_position, double next_position, double mass, double movement_time, double timestep_size)
+{
+  double distance = next_position - current_position;
+  double velocity = distance/movement_time;
+  return mass*velocity/timestep_size;
+}
+
+double PositionControllerPrivate::CalcTorque(double current_orientation, double next_orientation, double mass_moment_of_inertia, double movement_time, double timestep_size)
+{
+  // double distance = next_position - current_position;
+  double angle = (next_orientation - current_orientation);
+  // double velocity = distance/movement_time;
+  double angular_velocity = angle/movement_time;
+  // return mass*velocity/timestep_size;
+  return mass_moment_of_inertia*angular_velocity/time_step_size;
+  //return 0.0;
 }
 
 math::Vector3d PositionControllerPrivate::FlipVector3D(math::Vector3d vector)

@@ -72,7 +72,7 @@
     
     
     <model name='box'>
-      <pose>0 0 1 0 0 0</pose>
+      <pose>0 0 2 0 0 0</pose>
       <link name='box_link'>
         <inertial>
           <inertia>
@@ -89,7 +89,7 @@
         <collision name='box_collision'>
           <geometry>
             <box>
-              <size>1 1 1</size>
+              <size>1.5 0.75 0.75</size>
             </box>
           </geometry>
           <surface>
@@ -103,7 +103,7 @@
         <visual name='box_visual'>
           <geometry>
             <box>
-              <size>1 1 1</size>
+              <size>1.5 0.75 0.75</size>
             </box>
           </geometry>
           <material>
@@ -121,7 +121,7 @@
       <plugin
         filename="Position_Control"
         name="gz::sim::v7::systems::PositionController">
-        <timestep_precision>1</timestep_precision>
+        <timestep_precision>10</timestep_precision>
         <pose_topic>box</pose_topic>
         <xyz_offset> 0 0 0</xyz_offset>
         <rpy_offset> 0 0 0</rpy_offset>

@@ -60,3 +60,13 @@ Format > Text <
     Format > 0.0 0.0 0.0 < 
 <rpy offset> Roll, Pitch, Yaw offset. (Radians)
     Format > 0.0 0.0 0.0 < 
+
+
+## Terminal message that might be needed
+For both messages 'box' can be substituted to a different model name
+
+-Send a Pose message
+gz topic -t /box -m gz.msgs.StringMsg -p 'data:"-10,0,0,0,0,0,1"'
+
+-Get Pose of the model 
+gz model -m "box" -p

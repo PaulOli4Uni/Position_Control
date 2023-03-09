@@ -31,7 +31,8 @@
 #include <limits>
 #include <chrono>
 #include <iostream>
-#include<sstream>
+#include <sstream>
+#include <eigen3/Eigen/Dense>
 
 
 #include <gz/msgs/twist.pb.h>
@@ -99,7 +100,7 @@ class gz::sim::systems::PositionControllerPrivate
   /// \param[in] mass_moment_of_inertia Mass moment of inertia of the object (in XX)
   /// \param[in] movement_time Time in which object has to reach the 'next_orientation' (in seconds)
   /// \param[in] timestep_size Time over which force will be applied to the object (= timestep size of the simulator) (in seconds)
-  private: double CalcTorque(double current_orientation, double next_orientation, double mass_moment_of_inertia, double movement_time, double timestep_size);
+  private: double CalcTorque(double orientation, double mass_moment_of_inertia, double movement_time, double timestep_size);
 
   /// \brief Returns the opposite vector of the one provided (changes direction)
   /// \param[in] vector Vector which direction should be changed
@@ -144,7 +145,6 @@ class gz::sim::systems::PositionControllerPrivate
 
   /// \brief Shows if Wrench should be applied during pre-update. (True if it should be applied)
   public: bool apply_wrench;
-
 
   // -------------------------------------- Publisher Nodes
   /// \brief Gazebo communication node.
@@ -282,11 +282,11 @@ void PositionController::PreUpdate(const gz::sim::UpdateInfo &_info,
   {
     gzmsg << "At the Precision Time Step:  " << ElapsedTime.count() << std::endl;
 
-    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->FlipVector3D(this->dataPtr->wrench_force), this->dataPtr->FlipVector3D(this->dataPtr->wrench_torque));
-    this->dataPtr->wrench_force.Set(0,0,0); this->dataPtr->wrench_torque.Set(0,0,0); // Reset Force Amounts
+    // this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->FlipVector3D(this->dataPtr->wrench_force), this->dataPtr->FlipVector3D(this->dataPtr->wrench_torque));
+    // this->dataPtr->wrench_force.Set(0,0,0); this->dataPtr->wrench_torque.Set(0,0,0); // Reset Force Amounts
 
-    this->dataPtr->UpdateWrench(_info, _ecm, this->dataPtr->time_step_size*this->dataPtr->timestep_precision);
-    this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->wrench_force, this->dataPtr->wrench_torque);
+    // this->dataPtr->UpdateWrench(_info, _ecm, this->dataPtr->time_step_size*this->dataPtr->timestep_precision);
+    // this->dataPtr->canonicalLink.AddWorldWrench(_ecm, this->dataPtr->wrench_force, this->dataPtr->wrench_torque);
   }
 
   // Time for which force should be applied has been reached
@@ -383,6 +383,7 @@ void PositionController::PostUpdate(const UpdateInfo &_info,
 //////////////////////////////////////////////////
 void PositionControllerPrivate::OnPosePub(const msgs::StringMsg &_msg)
 {
+  // gzmsg << "Pose msg Received" << std::endl;
   //std::lock_guard<std::mutex> lock(this->mutex);
   //this->targetVel = _msg;
   this->on_topic_pose = true; this->apply_wrench = true;
@@ -480,28 +481,50 @@ void PositionControllerPrivate::UpdateWrench(const gz::sim::UpdateInfo &_info, c
   gzmsg << "Roll goal is: " << this->pose_target.Rot().Roll() << std::endl;
   
 
-  double torque_x = CalcTorque(pose.Rot().Roll(), this->pose_target.Rot().Roll(), 1, movement_time, this->time_step_size);
-  double torque_y = CalcTorque(pose.Rot().Pitch(), this->pose_target.Rot().Pitch(), 1, movement_time, this->time_step_size);
-  double torque_z = CalcTorque(pose.Rot().Yaw(), this->pose_target.Rot().Yaw(), 1, movement_time, this->time_step_size);
-  this->wrench_torque.Set(torque_x, torque_y, torque_z);
-//  gzmsg << "Force to Apply (accounts for current force) -> " << force << std::endl;
+  
+  
+  // double torque_x = CalcTorque(pose.Rot().Roll(), this->pose_target.Rot().Roll(), 1, movement_time, this->time_step_size);
+  // double torque_y = CalcTorque(pose.Rot().Pitch(), this->pose_target.Rot().Pitch(), 1, movement_time, this->time_step_size);
+  // double torque_z = CalcTorque(pose.Rot().Yaw(), this->pose_target.Rot().Yaw(), 1, movement_time, this->time_step_size);
 
-  //gzmsg << rawPose.Pos().X(); gzmsg << rawPose.Pos().Y(); gzmsg << rawPose.Pos().Z();
-  //gzmsg << rawPose.Pos().Rot(); gzmsg << rawPose.Pos().Yaw(); 
-  //gzmsg << pose.Rot().Yaw();
-  //msg.mutable_pose()->mutable_position()->set_y(pose.Pos().Y());
-  // msgs::Set(msg.mutable_pose()->mutable_orientation(), pose.Rot());
-  // if (this->dimensions == 3)
-  // {
-  //   msg.mutable_pose()->mutable_position()->set_z(pose.Pos().Z());
+  // gzmsg << "torques calculated. Roll: " << torque_x << " Pitch: " << torque_y << " Yaw: " << torque_z << std::endl;
+
+  // this->wrench_torque.Set(torque_x, torque_y, torque_z);
+
+  double delta_roll = this->pose_target.Rot().Roll() - pose.Rot().Roll();
+  double delta_pitch = this->pose_target.Rot().Pitch() - pose.Rot().Pitch();
+  double delta_yaw = this->pose_target.Rot().Yaw() - pose.Rot().Yaw();
+
+  double torque_x = CalcTorque(delta_roll, 1, movement_time, this->time_step_size);
+  double torque_y = CalcTorque(delta_pitch, 1, movement_time, this->time_step_size);
+  double torque_z = CalcTorque(delta_yaw, 1, movement_time, this->time_step_size);
+
+  // Wrong angles for three below (should be acualt angle not the change of angle)
+  // Eigen::Matrix3d Rx { {1,0,0}, {0, std::cos(delta_roll), -1*std::sin(delta_roll)}, {0, std::sin(delta_roll), std::cos(delta_roll)}};
+  // Eigen::Matrix3d Ry { {std::cos(delta_pitch),0,-1*std::sin(delta_pitch)}, {0,1,0}, {std::sin(delta_pitch),0,std::cos(delta_pitch)}};
+  // Eigen::Matrix3d Rz { {std::cos(delta_yaw),-1*std::sin(delta_yaw),0}, {std::sin(delta_yaw),std::cos(delta_yaw),0}, {0,0,1}};
+  
+  // Eigen::Matrix3d Rx { {1,0,0}, {0, std::cos(pose.Rot().Roll()), -1*std::sin(pose.Rot().Roll())}, {0, std::sin(pose.Rot().Roll()), std::cos(pose.Rot().Roll())}};
+  // Eigen::Matrix3d Ry { {std::cos(pose.Rot().Pitch()),0,-1*std::sin(pose.Rot().Pitch())}, {0,1,0}, {std::sin(pose.Rot().Pitch()),0,std::cos(pose.Rot().Pitch())}};
+  // Eigen::Matrix3d Rz { {std::cos(pose.Rot().Yaw()),-1*std::sin(pose.Rot().Yaw()),0}, {std::sin(pose.Rot().Yaw()),std::cos(pose.Rot().Yaw()),0}, {0,0,1}};
+  
+  // Eigen::Matrix3d R;
+  // R = Rx * (Ry * Rz);
+
+  // R = Eigen::AngleAxisd(delta_roll, Eigen::Vector3d::UnitX) * Eigen::AngleAxisd(delta_pitch, Eigen::Vector3d::UnitY) * Eigen::AngleAxisd(delta_yaw, Eigen::Vector3d::UnitZ);
+  //Eigen::Matrix3d Ry = ;
+  // Eigen::Matrix3d Rz = ;
   
 
+  gzmsg << "torque x: " << torque_x << " torque y: " << torque_y <<  " torque z: " << torque_z << std::endl;
 
-  //Calculate force needed to move box to desired location
+  Eigen::Vector3d torque {torque_x, torque_y, torque_z};
 
-  //this->UpdateWrench.Set(1, 1, 1);
-  //this->wrench_force = {0, 0, 0};
-  //this->dataPtr->wrench_force = {0, 0, 0};
+  // torque = R*torque;
+
+  this->wrench_torque.Set(torque(0), torque(1), torque(2));
+  gzmsg << "Adjusted torque x: " << torque(0) << " torque y: " << torque(1) <<  " torque z: " << torque(2);
+
 
 
 }
@@ -513,15 +536,19 @@ double PositionControllerPrivate::CalcForce(double current_position, double next
   return mass*velocity/timestep_size;
 }
 
-double PositionControllerPrivate::CalcTorque(double current_orientation, double next_orientation, double mass_moment_of_inertia, double movement_time, double timestep_size)
+double PositionControllerPrivate::CalcTorque(double orientation, double mass_moment_of_inertia, double movement_time, double timestep_size)
 {
   // double distance = next_position - current_position;
-  double angle = (next_orientation - current_orientation);
+  //double angle = (next_orientation - current_orientation);
+  double angle = orientation;
   // double velocity = distance/movement_time;
   double angular_velocity = angle/movement_time;
   // return mass*velocity/timestep_size;
-  return mass_moment_of_inertia*angular_velocity/time_step_size;
-  //return 0.0;
+  double torque = mass_moment_of_inertia*angular_velocity/time_step_size;
+  if (torque < 0.0001)
+    torque = 0;
+  
+  return torque;
 }
 
 math::Vector3d PositionControllerPrivate::FlipVector3D(math::Vector3d vector)
